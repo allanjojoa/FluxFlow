@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# FluxFlow build artifacts
+builds/
+configs/env_config.yaml
+configs/release_config.yaml

@@ -1,0 +1,32 @@
+# FluxFlow — Environment Configuration
+# Tokens use ${VAR_NAME} syntax and are resolved from environment variables at runtime.
+# Never commit actual tokens to version control.
+#
+# base_url is OPTIONAL — it is auto-derived from the region field.
+# Known regions: us, eu, ap, us-west
+# Only specify base_url if you use a custom/private Talend Cloud endpoint.
+
+# Promotion chain defines the order artifacts flow between environments.
+# During build, if an artifact version is not found in the target environment,
+# FluxFlow will look for it in the previous environment in the chain and
+# flag it for promotion.
+promotion_chain:
+  - dev
+  - qa
+  - prod
+
+environments:
+  dev:
+    region: "region"
+    token: "token"
+    workspace_name: "workspace_name"
+
+  qa:
+    region: "region"
+    token: "token"
+    workspace_name: "workspace_name"
+
+  prod:
+    region: "region"
+    token: "token"
+    workspace_name: "workspace_name"

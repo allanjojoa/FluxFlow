@@ -1,0 +1,41 @@
+# FluxFlow — Release Configuration
+# Defines the desired state of all managed tasks.
+# The build stage compares this against the remote state; deploy applies changes.
+
+connector: talend
+
+tasks:
+  - name: "ETL_Customer_Load"
+    artifact:
+      name: "customer-pipeline"
+      version: "2.3.1"
+    parameters:
+      source_database: "raw_db"
+      target_schema: "curated"
+      batch_size: "5000"
+      log_level: "INFO"
+    studio_connection:
+      # Maps Studio connection names to Cloud Connection Names
+      # For example, mapping Studio connection 'DB_RAW' to Cloud connection 'PROD_DB_RAW'
+      DB_RAW: "PROD_DB_RAW"
+    processing:
+      # Runtime execution configuration
+      runtime: "PROD_REMOTE_ENGINE"       # Name of the Remote Engine or Cloud Engine
+      log_level: "INFO"                   # OFF | ERROR | WARN | INFO | DEBUG
+      timeout_minutes: 60
+
+  - name: "ETL_Order_Sync"
+    artifact:
+      name: "order-pipeline"
+      version: "1.8.0"
+    parameters:
+      source_database: "raw_db"
+      target_schema: "curated"
+      sync_mode: "incremental"
+    studio_connection:
+      type: "REMOTE_ENGINE"
+      connection_id: "re-order-engine-01"
+    processing:
+      runtime: "Standard"
+      log_level: "WARN"
+      timeout_minutes: 120
