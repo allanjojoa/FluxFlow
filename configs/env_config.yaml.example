@@ -20,13 +20,16 @@ environments:
     region: "region"
     token: "token"
     workspace_name: "workspace_name"
+    release_config_path: "configs/dev/release_config.yaml"
 
   qa:
     region: "region"
     token: "token"
     workspace_name: "workspace_name"
+    release_config_path: "configs/qa/release_config.yaml"
 
   prod:
     region: "region"
     token: "token"
     workspace_name: "workspace_name"
+    release_config_path: "configs/prod/release_config.yaml"

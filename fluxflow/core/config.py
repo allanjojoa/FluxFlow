@@ -15,7 +15,9 @@ import yaml
 from fluxflow.core.models import (
     ArtifactConfig,
     EnvironmentConfig,
+    PlanConfig,
     ReleaseConfig,
+    StepConfig,
     TaskConfig,
 )
 
@@ -87,12 +89,16 @@ def load_env_config(config_path: str | Path, env_name: str) -> EnvironmentConfig
                 f"Provide an explicit 'base_url' in the config."
             )
 
+    raw_release_path = env_data.get("release_config_path")
+    release_config_path = _resolve_env_vars(str(raw_release_path)) if raw_release_path else None
+
     return EnvironmentConfig(
         name=env_name,
         region=region,
         base_url=base_url,
         token=_resolve_env_vars(str(env_data["token"])),
         workspace_name=_resolve_env_vars(str(env_data["workspace_name"])),
+        release_config_path=release_config_path,
     )
 
 
@@ -168,7 +174,13 @@ def load_release_config(config_path: str | Path) -> ReleaseConfig:
     for idx, task_data in enumerate(raw_tasks):
         tasks.append(_parse_task(task_data, idx))
 
-    return ReleaseConfig(connector=connector, tasks=tasks)
+    raw_plans = raw.get("plans")
+    plans: list[PlanConfig] = []
+    if raw_plans and isinstance(raw_plans, list):
+        for idx, plan_data in enumerate(raw_plans):
+            plans.append(_parse_plan(plan_data, idx))
+
+    return ReleaseConfig(connector=connector, tasks=tasks, plans=plans)
 
 
 # ---------------------------------------------------------------------------
@@ -259,4 +271,29 @@ def _parse_task(data: dict, index: int) -> TaskConfig:
         studio_connection=studio_connection,
         processing=processing,
     )
+
+
+def _parse_plan(data: dict, index: int) -> PlanConfig:
+    """Parse a single plan entry from the release config."""
+    context = f"plans[{index}]"
+
+    if not isinstance(data, dict):
+        raise ConfigError(f"{context}: expected a mapping, got {type(data).__name__}")
+
+    _validate_keys(data, ["name", "steps"], context=context)
+    
+    steps_data = data["steps"]
+    if not isinstance(steps_data, list):
+        raise ConfigError(f"{context}.steps: expected a list, got {type(steps_data).__name__}")
+        
+    steps: list[StepConfig] = []
+    for s_idx, step_data in enumerate(steps_data):
+        s_context = f"{context}.steps[{s_idx}]"
+        if not isinstance(step_data, dict):
+            raise ConfigError(f"{s_context}: expected a mapping, got {type(step_data).__name__}")
+        
+        _validate_keys(step_data, ["name", "task"], context=s_context)
+        steps.append(StepConfig(name=str(step_data["name"]), task=str(step_data["task"])))
+        
+    return PlanConfig(name=str(data["name"]), steps=steps)
 

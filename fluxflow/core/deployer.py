@@ -116,35 +116,64 @@ def run_deploy(
             report.results.append(result)
 
     # --- Step 2: Deploy task changes ---
-    console.print(f"Deploying [bold]{len(actionable)}[/bold] task change(s)…\n")
+    task_changes = [c for c in actionable if c.change_type not in (ChangeType.NEW_PLAN, ChangeType.UPDATE_PLAN)]
+    plan_changes = [c for c in actionable if c.change_type in (ChangeType.NEW_PLAN, ChangeType.UPDATE_PLAN)]
+    
+    if task_changes:
+        console.print(f"Deploying [bold]{len(task_changes)}[/bold] task change(s)…\n")
+        for change in task_changes:
+            desired = task_lookup.get(change.task_name)
+            if desired is None:
+                result = DeployResult(
+                    task_name=change.task_name,
+                    change_type=change.change_type,
+                    status=DeployStatus.FAILED,
+                    message=f"Task '{change.task_name}' not found in release config",
+                )
+                report.results.append(result)
+                continue
 
-    for change in actionable:
-        desired = task_lookup.get(change.task_name)
-        if desired is None:
-            result = DeployResult(
-                task_name=change.task_name,
-                change_type=change.change_type,
-                status=DeployStatus.FAILED,
-                message=f"Task '{change.task_name}' not found in release config",
-            )
+            if change.promotion_needed and not change.promotion_source_env:
+                result = DeployResult(
+                    task_name=change.task_name,
+                    change_type=change.change_type,
+                    status=DeployStatus.FAILED,
+                    message=(
+                        f"Cannot deploy: Artifact version '{change.artifact_new_version}' is missing "
+                        "in the target workspace and cannot be promoted (source not found or target is first in chain)."
+                    ),
+                )
+                report.results.append(result)
+                continue
+
+            result = _deploy_change(connector, change, desired, dry_run=dry_run)
             report.results.append(result)
-            continue
-
-        if change.promotion_needed and not change.promotion_source_env:
-            result = DeployResult(
-                task_name=change.task_name,
-                change_type=change.change_type,
-                status=DeployStatus.FAILED,
-                message=(
-                    f"Cannot deploy: Artifact version '{change.artifact_new_version}' is missing "
-                    "in the target workspace and cannot be promoted (source not found or target is first in chain)."
-                ),
-            )
+            
+    # --- Step 3: Deploy plan changes ---
+    if plan_changes:
+        # Before deploying plans, refresh the task cache in case tasks were just created/updated
+        if not dry_run and hasattr(connector, "refresh_task_cache"):
+            connector.refresh_task_cache()
+            
+        console.print(f"\nDeploying [bold]{len(plan_changes)}[/bold] plan change(s)…\n")
+        
+        # Load plans from config
+        plan_lookup = {p.name: p for p in getattr(release_config, "plans", [])}
+        
+        for change in plan_changes:
+            desired_plan = plan_lookup.get(change.plan_name)
+            if desired_plan is None:
+                result = DeployResult(
+                    task_name=change.task_name,
+                    change_type=change.change_type,
+                    status=DeployStatus.FAILED,
+                    message=f"Plan '{change.plan_name}' not found in release config",
+                )
+                report.results.append(result)
+                continue
+                
+            result = _deploy_change(connector, change, desired_plan, dry_run=dry_run)
             report.results.append(result)
-            continue
-
-        result = _deploy_change(connector, change, desired, dry_run=dry_run)
-        report.results.append(result)
 
     # Check overall status
     failures = [r for r in report.results if r.status == DeployStatus.FAILED]
@@ -198,7 +227,7 @@ def _promote_artifact(
 def _deploy_change(
     connector: BaseConnector,
     change: BuildChange,
-    desired: TaskConfig,
+    desired: Any,
     *,
     dry_run: bool = False,
 ) -> DeployResult:
@@ -241,6 +270,37 @@ def _deploy_change(
             )
         return connector.update_task(change.remote_task_id, desired)
 
+    elif change.change_type == ChangeType.NEW_PLAN:
+        if dry_run:
+            console.print(f"{task_label} [green]CREATE PLAN (dry-run)[/green]")
+            return DeployResult(
+                task_name=change.task_name,
+                change_type=change.change_type,
+                status=DeployStatus.SKIPPED,
+                message=f"Would create plan '{change.plan_name}' (dry-run)",
+            )
+        console.print(f"{task_label} [green]CREATE PLAN[/green]")
+        return connector.create_plan(desired)
+
+    elif change.change_type == ChangeType.UPDATE_PLAN:
+        if dry_run:
+            console.print(f"{task_label} [yellow]UPDATE PLAN (dry-run)[/yellow]")
+            return DeployResult(
+                task_name=change.task_name,
+                change_type=change.change_type,
+                status=DeployStatus.SKIPPED,
+                message=f"Would update plan '{change.plan_name}' (dry-run)",
+            )
+
+        console.print(f"{task_label} [yellow]UPDATE PLAN[/yellow]")
+        if not change.remote_plan_id:
+            return DeployResult(
+                task_name=change.task_name,
+                change_type=change.change_type,
+                status=DeployStatus.FAILED,
+                message="No remote plan ID available — cannot update",
+            )
+        return connector.update_plan(change.remote_plan_id, desired)
     else:
         console.print(f"{task_label} [dim]SKIP[/dim]")
         return DeployResult(
@@ -295,6 +355,9 @@ def load_manifest(manifest_path: str | Path) -> BuildManifest:
             desired_parameters=c.get("desired_parameters", {}),
             promotion_needed=c.get("promotion_needed", False),
             promotion_source_env=c.get("promotion_source_env"),
+            plan_name=c.get("plan_name"),
+            remote_plan_id=c.get("remote_plan_id"),
+            step_diffs=c.get("step_diffs", []),
         ))
 
     return BuildManifest(

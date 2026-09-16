@@ -74,7 +74,8 @@ def _handle_build(args: argparse.Namespace) -> int:
 
     # Load configs
     env_config = load_env_config(args.env_config, args.env)
-    release_config = load_release_config(args.config)
+    release_config_path = args.config or env_config.release_config_path or DEFAULT_RELEASE_CONFIG
+    release_config = load_release_config(release_config_path)
 
     # Load promotion chain and all env configs for cross-env checks
     promotion_chain = load_promotion_chain(args.env_config)
@@ -131,7 +132,8 @@ def _handle_deploy(args: argparse.Namespace) -> int:
         return 1
 
     # Initialize connector
-    release_config = load_release_config(args.config)
+    release_config_path = args.config or env_config.release_config_path or DEFAULT_RELEASE_CONFIG
+    release_config = load_release_config(release_config_path)
     connector = _create_connector(release_config.connector, env_config)
 
     # Load all env configs for potential promotion during deploy
@@ -141,7 +143,7 @@ def _handle_deploy(args: argparse.Namespace) -> int:
     report = run_deploy(
         connector=connector,
         manifest=manifest,
-        release_config_path=args.config,
+        release_config_path=release_config_path,
         env_name=args.env,
         dry_run=args.dry_run,
         env_configs=env_configs,
@@ -187,8 +189,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument(
         "--config",
-        default=DEFAULT_RELEASE_CONFIG,
-        help=f"Path to release_config.yaml (default: {DEFAULT_RELEASE_CONFIG})",
+        default=None,
+        help=f"Path to release_config.yaml (default: {DEFAULT_RELEASE_CONFIG} or via env_config)",
     )
     build_parser.add_argument(
         "--env-config",
@@ -225,8 +227,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     deploy_parser.add_argument(
         "--config",
-        default=DEFAULT_RELEASE_CONFIG,
-        help=f"Path to release_config.yaml (default: {DEFAULT_RELEASE_CONFIG})",
+        default=None,
+        help=f"Path to release_config.yaml (default: {DEFAULT_RELEASE_CONFIG} or via env_config)",
     )
     deploy_parser.add_argument(
         "--env-config",

@@ -12,7 +12,13 @@ from typing import Any
 
 import requests
 
-from fluxflow.core.models import EnvironmentConfig, RemoteArtifact, RemoteTask
+from fluxflow.core.models import (
+    EnvironmentConfig, 
+    RemoteArtifact, 
+    RemoteTask, 
+    RemotePlan, 
+    RemoteStep
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +199,30 @@ class TalendClient:
             The updated task response from the API.
         """
         return self._put(f"/orchestration/executables/tasks/{task_id}", json_body=payload)
+
+    # ------------------------------------------------------------------
+    # Plan endpoints
+    # ------------------------------------------------------------------
+
+    def list_plans(self) -> list[RemotePlan]:
+        """Fetch all plans in the configured workspace."""
+        params = {"workspaceId": self._workspace_id}
+        data = self._get("/orchestration/executables/plans", params=params)
+        items = data if isinstance(data, list) else data.get("items", [])
+        return [self._parse_plan(item) for item in items]
+
+    def get_plan(self, plan_id: str) -> RemotePlan:
+        """Fetch a single plan by its ID."""
+        data = self._get(f"/orchestration/executables/plans/{plan_id}")
+        return self._parse_plan(data)
+
+    def create_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new plan."""
+        return self._post("/orchestration/executables/plans", json_body=payload)
+
+    def update_plan(self, plan_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Update an existing plan."""
+        return self._put(f"/orchestration/executables/plans/{plan_id}", json_body=payload)
 
     # ------------------------------------------------------------------
     # Artifact endpoints
@@ -420,6 +450,43 @@ class TalendClient:
             name=data.get("name", ""),
             artifact=artifact,
             parameters=parameters,
+            workspace_id=data.get("workspace", {}).get("id", data.get("workspaceId", data.get("workspace_id", ""))),
+            raw=data,
+        )
+
+    @staticmethod
+    def _parse_plan(data: dict[str, Any]) -> RemotePlan:
+        """Convert a raw API plan response into a :class:`RemotePlan`."""
+        steps: list[RemoteStep] = []
+        
+        # Walk the linked list of steps
+        current_step_data = data.get("chart")
+        while current_step_data:
+            step_id = current_step_data.get("id", "")
+            step_name = current_step_data.get("name", "")
+            
+            flows = current_step_data.get("flows", [])
+            task_id = ""
+            task_name = ""
+            if flows:
+                # Assuming one task per step for now
+                task_id = flows[0].get("id", "")
+                task_name = flows[0].get("name", "")
+                
+            if step_id or step_name:
+                steps.append(RemoteStep(
+                    id=step_id,
+                    name=step_name,
+                    task_id=task_id,
+                    task_name=task_name
+                ))
+            
+            current_step_data = current_step_data.get("nextStep")
+            
+        return RemotePlan(
+            id=data.get("id", data.get("executable", "")),
+            name=data.get("name", ""),
+            steps=steps,
             workspace_id=data.get("workspace", {}).get("id", data.get("workspaceId", data.get("workspace_id", ""))),
             raw=data,
         )

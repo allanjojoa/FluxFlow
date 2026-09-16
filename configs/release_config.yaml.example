@@ -39,3 +39,11 @@ tasks:
       runtime: "Standard"
       log_level: "WARN"
       timeout_minutes: 120
+
+plans:
+  - name: "Nightly_ETL_Orchestration"
+    steps:
+      - name: "Step 1 - Load Customers"
+        task: "ETL_Customer_Load"
+      - name: "Step 2 - Sync Orders"
+        task: "ETL_Order_Sync"

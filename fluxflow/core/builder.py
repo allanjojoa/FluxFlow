@@ -99,6 +99,37 @@ def run_build(
 
         manifest.changes.append(change)
 
+    # Process plans if they exist
+    if getattr(release_config, "plans", []):
+        with console.status("[bold green]Fetching remote plans…"):
+            if hasattr(connector, "list_plans"):
+                connector.list_plans()
+
+        for plan_config in release_config.plans:
+            # Validate that every task referenced in the plan exists or is being created
+            for step in plan_config.steps:
+                task_found = False
+                if hasattr(connector, "get_task_by_name") and connector.get_task_by_name(step.task):
+                    task_found = True
+                elif hasattr(connector, "get_plan_by_name") and connector.get_plan_by_name(step.task):
+                    task_found = True
+                else:
+                    for c in manifest.changes:
+                        if c.task_name == step.task and c.change_type in (ChangeType.NEW_TASK, ChangeType.NEW_PLAN):
+                            task_found = True
+                            break
+                if not task_found:
+                    logger.error("Plan '%s' references task '%s' which is not available in workspace or deployment manifest.", plan_config.name, step.task)
+                    raise ValueError(f"Task '{step.task}' not available for plan '{plan_config.name}'")
+
+            remote_plan = None
+            if hasattr(connector, "get_plan_by_name"):
+                remote_plan = connector.get_plan_by_name(plan_config.name)
+
+            if hasattr(connector, "diff_plan"):
+                change = connector.diff_plan(plan_config, remote_plan)
+                manifest.changes.append(change)
+
     # Step 4: Write manifest to disk
     output_path = _write_manifest(manifest, output_dir)
 
@@ -229,6 +260,8 @@ def _print_summary(manifest: BuildManifest, output_path: Path) -> None:
         ChangeType.UPDATE_PARAMS: "[bold yellow]",
         ChangeType.UPDATE_ARTIFACT_AND_PARAMS: "[bold yellow]",
         ChangeType.PROMOTE_ARTIFACT: "[bold magenta]",
+        ChangeType.NEW_PLAN: "[bold green]",
+        ChangeType.UPDATE_PLAN: "[bold yellow]",
         ChangeType.NO_CHANGE: "[dim]",
     }
 
@@ -236,35 +269,48 @@ def _print_summary(manifest: BuildManifest, output_path: Path) -> None:
         style = _STYLE_MAP.get(change.change_type, "")
         end_style = "[/]" if style else ""
 
-        # Version change column
-        if change.artifact_old_version and change.artifact_new_version:
-            version_str = f"{change.artifact_old_version} → {change.artifact_new_version}"
-        elif change.artifact_new_version:
-            version_str = f"→ {change.artifact_new_version}"
+        if change.change_type in (ChangeType.NEW_PLAN, ChangeType.UPDATE_PLAN) or (change.change_type == ChangeType.NO_CHANGE and getattr(change, "plan_name", None)):
+            # It's a plan
+            step_count = len(change.step_diffs)
+            param_str = f"{step_count} step diffs" if step_count else "—"
+            table.add_row(
+                f"{style}{change.task_name}{end_style}",
+                f"{style}{change.change_type.value}{end_style}",
+                f"{style}—{end_style}",
+                f"{style}—{end_style}",
+                f"{style}{param_str}{end_style}",
+                "——",
+            )
         else:
-            version_str = "—"
-
-        # Param changes column
-        param_count = len(change.param_diffs)
-        param_str = f"{param_count} change(s)" if param_count else "—"
-
-        # Promotion column
-        if change.promotion_needed:
-            if change.promotion_source_env:
-                promo_str = f"[bold magenta]← {change.promotion_source_env}[/bold magenta]"
+            # Version change column
+            if change.artifact_old_version and change.artifact_new_version:
+                version_str = f"{change.artifact_old_version} → {change.artifact_new_version}"
+            elif change.artifact_new_version:
+                version_str = f"→ {change.artifact_new_version}"
             else:
-                promo_str = "[bold red]NOT FOUND[/bold red]"
-        else:
-            promo_str = "—"
+                version_str = "—"
 
-        table.add_row(
-            f"{style}{change.task_name}{end_style}",
-            f"{style}{change.change_type.value}{end_style}",
-            f"{style}{change.artifact_name or '—'}{end_style}",
-            f"{style}{version_str}{end_style}",
-            f"{style}{param_str}{end_style}",
-            promo_str,
-        )
+            # Param changes column
+            param_count = len(change.param_diffs)
+            param_str = f"{param_count} change(s)" if param_count else "—"
+
+            # Promotion column
+            if change.promotion_needed:
+                if change.promotion_source_env:
+                    promo_str = f"[bold magenta]← {change.promotion_source_env}[/bold magenta]"
+                else:
+                    promo_str = "[bold red]NOT FOUND[/bold red]"
+            else:
+                promo_str = "—"
+
+            table.add_row(
+                f"{style}{change.task_name}{end_style}",
+                f"{style}{change.change_type.value}{end_style}",
+                f"{style}{change.artifact_name or '—'}{end_style}",
+                f"{style}{version_str}{end_style}",
+                f"{style}{param_str}{end_style}",
+                promo_str,
+            )
 
     console.print(table)
 

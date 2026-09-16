@@ -20,6 +20,8 @@ from fluxflow.core.models import (
     ParamDiff,
     RemoteTask,
     TaskConfig,
+    PlanConfig,
+    RemotePlan,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,12 @@ class TalendConnector(BaseConnector):
         super().__init__(env_config)
         self.client = TalendClient(env_config)
         self._task_cache: dict[str, RemoteTask] | None = None
+        self._plan_cache: dict[str, RemotePlan] | None = None
+
+    def refresh_task_cache(self) -> None:
+        """Force a refresh of the task cache."""
+        self._task_cache = None
+        self.list_tasks()
 
     # ------------------------------------------------------------------
     # Read operations
@@ -77,6 +85,33 @@ class TalendConnector(BaseConnector):
                 task_name, shallow_task.id, exc
             )
             return shallow_task
+
+    def list_plans(self) -> list[RemotePlan]:
+        """Fetch all plans and populate the local cache."""
+        plans = self.client.list_plans()
+        self._plan_cache = {p.name: p for p in plans}
+        logger.info("Fetched %d plans from Talend workspace", len(plans))
+        return plans
+
+    def get_plan_by_name(self, plan_name: str) -> RemotePlan | None:
+        """Look up a plan by name, using cache if available."""
+        if self._plan_cache is None:
+            self.list_plans()
+        
+        shallow_plan = self._plan_cache.get(plan_name)
+        if shallow_plan is None:
+            return None
+            
+        try:
+            full_plan = self.client.get_plan(shallow_plan.id)
+            self._plan_cache[plan_name] = full_plan
+            return full_plan
+        except Exception as exc:
+            logger.warning(
+                "Could not fetch full details for plan '%s' (id=%s): %s", 
+                plan_name, shallow_plan.id, exc
+            )
+            return shallow_plan
 
     # ------------------------------------------------------------------
     # Diff / build
@@ -141,6 +176,48 @@ class TalendConnector(BaseConnector):
             artifact_new_version=desired.artifact.version if artifact_changed else None,
             param_diffs=param_diffs,
             desired_parameters=desired.parameters if params_changed else {},
+        )
+
+    def diff_plan(self, desired: PlanConfig, remote: RemotePlan | None) -> BuildChange:
+        """Compare desired state with remote state for a Plan and return the diff."""
+        if remote is None:
+            logger.info("Plan '%s' not found remotely — flagged as NEW_PLAN", desired.name)
+            return BuildChange(
+                task_name=f"plan:{desired.name}",
+                change_type=ChangeType.NEW_PLAN,
+                plan_name=desired.name,
+            )
+            
+        # Compare steps
+        desired_steps = [(s.name, s.task) for s in desired.steps]
+        remote_steps = [(s.name, s.task_name) for s in remote.steps]
+        
+        if desired_steps != remote_steps:
+            logger.info("Plan '%s' has step changes — flagged as UPDATE_PLAN", desired.name)
+            
+            # Simple list of differences for reporting
+            step_diffs = []
+            max_len = max(len(desired_steps), len(remote_steps))
+            for i in range(max_len):
+                d_val = desired_steps[i] if i < len(desired_steps) else None
+                r_val = remote_steps[i] if i < len(remote_steps) else None
+                if d_val != r_val:
+                    step_diffs.append(f"Step {i+1}: {r_val} -> {d_val}")
+                    
+            return BuildChange(
+                task_name=f"plan:{desired.name}",
+                change_type=ChangeType.UPDATE_PLAN,
+                remote_plan_id=remote.id,
+                plan_name=desired.name,
+                step_diffs=step_diffs,
+            )
+            
+        logger.debug("Plan '%s' — no changes detected", desired.name)
+        return BuildChange(
+            task_name=f"plan:{desired.name}",
+            change_type=ChangeType.NO_CHANGE,
+            remote_plan_id=remote.id,
+            plan_name=desired.name,
         )
 
     # ------------------------------------------------------------------
@@ -348,6 +425,61 @@ class TalendConnector(BaseConnector):
                 message=str(exc),
             )
 
+    def create_plan(self, desired: PlanConfig) -> DeployResult:
+        """Create a new plan in Talend Cloud."""
+        logger.info("Creating plan '%s'", desired.name)
+        payload = self._build_plan_payload(desired, include_workspace=True)
+        try:
+            result = self.client.create_plan(payload)
+            plan_id = result.get("id", "unknown")
+            logger.info("Plan '%s' created successfully (id=%s)", desired.name, plan_id)
+            return DeployResult(
+                task_name=f"plan:{desired.name}",
+                change_type=ChangeType.NEW_PLAN,
+                status=DeployStatus.SUCCESS,
+                message=f"Created plan with id={plan_id}",
+                remote_task_id=plan_id,
+            )
+        except Exception as exc:
+            logger.error("Failed to create plan '%s': %s", desired.name, exc)
+            return DeployResult(
+                task_name=f"plan:{desired.name}",
+                change_type=ChangeType.NEW_PLAN,
+                status=DeployStatus.FAILED,
+                message=str(exc),
+            )
+
+    def update_plan(self, remote_plan_id: str, desired: PlanConfig) -> DeployResult:
+        """Update an existing plan in Talend Cloud."""
+        logger.info("Updating plan '%s' (id=%s)", desired.name, remote_plan_id)
+        try:
+            remote_plan = self.client.get_plan(remote_plan_id)
+            payload = remote_plan.raw.copy()
+            
+            # Merge in the new steps (chart)
+            new_payload = self._build_plan_payload(desired, include_workspace=False)
+            payload["chart"] = new_payload["chart"]
+            payload["workspaceId"] = self.client.workspace_id
+            payload["environmentId"] = self.client.environment_id
+            
+            self.client.update_plan(remote_plan_id, payload)
+            logger.info("Plan '%s' updated successfully", desired.name)
+            return DeployResult(
+                task_name=f"plan:{desired.name}",
+                change_type=ChangeType.UPDATE_PLAN,
+                status=DeployStatus.SUCCESS,
+                message=f"Updated plan id={remote_plan_id}",
+                remote_task_id=remote_plan_id,
+            )
+        except Exception as exc:
+            logger.error("Failed to update plan '%s': %s", desired.name, exc)
+            return DeployResult(
+                task_name=f"plan:{desired.name}",
+                change_type=ChangeType.UPDATE_PLAN,
+                status=DeployStatus.FAILED,
+                message=str(exc),
+            )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -404,6 +536,49 @@ class TalendConnector(BaseConnector):
             if proc_keys:
                 payload["processing"] = proc_keys
 
+        return payload
+
+    def _build_plan_payload(
+        self,
+        desired: PlanConfig,
+        *,
+        include_workspace: bool = False,
+    ) -> dict[str, Any]:
+        """Build the API payload for creating or updating a plan.
+        
+        Converts a flat list of steps into Talend's nested 'chart -> nextStep' structure.
+        """
+        payload: dict[str, Any] = {
+            "name": desired.name,
+        }
+        
+        if include_workspace:
+            payload["workspaceId"] = self.client.workspace_id
+            payload["environmentId"] = self.client.environment_id
+
+        if not desired.steps:
+            return payload
+
+        # Resolve all tasks first
+        # Resolve all tasks/plans first
+        resolved_items = []
+        for step in desired.steps:
+            item = self.get_task_by_name(step.task)
+            if not item:
+                item = self.get_plan_by_name(step.task)
+            if not item:
+                raise ValueError(f"Task or Plan '{step.task}' not found in Talend workspace. Make sure it is created first.")
+            resolved_items.append((step, item))
+
+        # Build the payload using the flat steps array expected by Talend's POST/PUT endpoints
+        steps_payload = []
+        for step, item in resolved_items:
+            steps_payload.append({
+                "name": step.name,
+                "taskIds": [item.id]
+            })
+
+        payload["steps"] = steps_payload
         return payload
 
     def _resolve_artifact_id(self, artifact_name: str) -> str:

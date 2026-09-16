@@ -22,6 +22,7 @@ class EnvironmentConfig:
     token: str
     workspace_name: str
     workspace_id: str | None = None
+    release_config_path: str | None = None
 
 
 @dataclass
@@ -30,6 +31,22 @@ class ArtifactConfig:
 
     name: str
     version: str
+
+
+@dataclass
+class StepConfig:
+    """Desired state of a single step inside a plan."""
+
+    name: str
+    task: str
+
+
+@dataclass
+class PlanConfig:
+    """Desired state of a plan as declared in release_config.yaml."""
+
+    name: str
+    steps: list[StepConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -49,6 +66,7 @@ class ReleaseConfig:
 
     connector: str
     tasks: list[TaskConfig] = field(default_factory=list)
+    plans: list[PlanConfig] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +95,27 @@ class RemoteTask:
     raw: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class RemoteStep:
+    """Step as it exists on the remote plan."""
+
+    id: str
+    name: str
+    task_id: str
+    task_name: str
+
+
+@dataclass
+class RemotePlan:
+    """Plan as it exists on the remote platform."""
+
+    id: str
+    name: str
+    steps: list[RemoteStep] = field(default_factory=list)
+    workspace_id: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Build models
 # ---------------------------------------------------------------------------
@@ -89,6 +128,8 @@ class ChangeType(str, Enum):
     UPDATE_PARAMS = "UPDATE_PARAMS"
     UPDATE_ARTIFACT_AND_PARAMS = "UPDATE_ARTIFACT_AND_PARAMS"
     PROMOTE_ARTIFACT = "PROMOTE_ARTIFACT"
+    NEW_PLAN = "NEW_PLAN"
+    UPDATE_PLAN = "UPDATE_PLAN"
     NO_CHANGE = "NO_CHANGE"
 
 
@@ -116,6 +157,11 @@ class BuildChange:
     desired_parameters: dict[str, str] = field(default_factory=dict)
     promotion_needed: bool = False
     promotion_source_env: str | None = None
+    
+    # Plan specific properties
+    plan_name: str | None = None
+    remote_plan_id: str | None = None
+    step_diffs: list[str] = field(default_factory=list)
 
 
 @dataclass
