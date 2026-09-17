@@ -456,9 +456,12 @@ class TalendConnector(BaseConnector):
             remote_plan = self.client.get_plan(remote_plan_id)
             payload = remote_plan.raw.copy()
             
-            # Merge in the new steps (chart)
+            # Merge in the new steps
             new_payload = self._build_plan_payload(desired, include_workspace=False)
-            payload["chart"] = new_payload["chart"]
+            payload.pop("chart", None)
+            payload.pop("steps", None)
+            if "steps" in new_payload:
+                payload["steps"] = new_payload["steps"]
             payload["workspaceId"] = self.client.workspace_id
             payload["environmentId"] = self.client.environment_id
             
