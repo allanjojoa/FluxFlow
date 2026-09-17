@@ -76,6 +76,12 @@ class TalendConnector(BaseConnector):
             
         try:
             full_task = self.client.get_task(shallow_task.id)
+            
+            # The list_tasks summary contains 'runtime' but get_task full response often omits it.
+            # Preserve it from the shallow task so diff_task can compare engine configurations.
+            if "runtime" not in full_task.raw and "runtime" in shallow_task.raw:
+                full_task.raw["runtime"] = shallow_task.raw["runtime"]
+                
             setattr(full_task, "_is_full", True)
             self._task_cache[task_name] = full_task
             return full_task
@@ -150,6 +156,44 @@ class TalendConnector(BaseConnector):
 
         # --- Compare parameters ---
         param_diffs = self._diff_parameters(remote.parameters, desired.parameters)
+        
+        # --- Compare connections ---
+        if desired.studio_connection:
+            remote_connections = remote.raw.get("connections", {})
+            for studio_name, cloud_name in desired.studio_connection.items():
+                conn_id = self.client.resolve_connection_id(cloud_name)
+                expected_val = conn_id if conn_id else cloud_name
+                
+                remote_val = remote_connections.get(studio_name)
+                if remote_val != expected_val:
+                    param_diffs.append(
+                        ParamDiff(
+                            key=f"connection:{studio_name}",
+                            old_value=str(remote_val),
+                            new_value=str(expected_val),
+                            action="changed" if remote_val else "added",
+                        )
+                    )
+
+        # --- Compare processing/runtime ---
+        if desired.processing and "runtime" in desired.processing:
+            runtime_name = desired.processing["runtime"]
+            runtime_id = self.client.resolve_engine_id(runtime_name)
+            
+            if runtime_id:
+                remote_runtime = remote.raw.get("runtime", {})
+                remote_runtime_id = remote_runtime.get("runProfileId") or remote_runtime.get("id")
+                
+                if remote_runtime_id != runtime_id:
+                    param_diffs.append(
+                        ParamDiff(
+                            key="runtime_engine",
+                            old_value=str(remote_runtime_id),
+                            new_value=str(runtime_id),
+                            action="changed" if remote_runtime_id else "added",
+                        )
+                    )
+
         params_changed = len(param_diffs) > 0
 
         # --- Determine change type ---
@@ -313,6 +357,37 @@ class TalendConnector(BaseConnector):
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
+    def _apply_run_config(self, task_name: str, task_id: str, desired_processing: dict[str, Any]) -> None:
+        if not desired_processing:
+            return
+            
+        try:
+            run_config = self.client.get_task_run_config(task_id)
+            
+            if "runtime" in desired_processing:
+                runtime_name = desired_processing["runtime"]
+                runtime_id = self.client.resolve_engine_id(runtime_name)
+                
+                if runtime_id:
+                    run_config["runtime"] = {
+                        "id": runtime_id,
+                        "type": "REMOTE_ENGINE",
+                        "runProfileId": ""
+                    }
+                else:
+                    logger.warning("Could not resolve engine '%s' for run-config, using as is", runtime_name)
+            
+            # Map other fields from snake_case to camelCase (e.g., log_level -> logLevel)
+            for k, v in desired_processing.items():
+                if k != "runtime":
+                    parts = k.split("_")
+                    camel_k = parts[0] + "".join(p.capitalize() for p in parts[1:])
+                    run_config[camel_k] = v
+                    
+            self.client.update_task_run_config(task_id, run_config)
+            logger.info("Task '%s' run configuration updated successfully", task_name)
+        except Exception as run_exc:
+            logger.error("Failed to update run configuration for task '%s': %s", task_name, run_exc)
 
     def create_task(self, desired: TaskConfig) -> DeployResult:
         """Create a new task in Talend Cloud.
@@ -334,6 +409,10 @@ class TalendConnector(BaseConnector):
             result = self.client.create_task(payload)
             task_id = result.get("id", "unknown")
             logger.info("Task '%s' created successfully (id=%s)", desired.name, task_id)
+            
+            # Apply processing configuration to newly created task
+            self._apply_run_config(desired.name, task_id, desired.processing)
+            
             return DeployResult(
                 task_name=desired.name,
                 change_type=ChangeType.NEW_TASK,
@@ -389,26 +468,17 @@ class TalendConnector(BaseConnector):
                         logger.warning("Could not resolve connection '%s', using as is", cloud_name)
                         payload["connections"][studio_name] = cloud_name
 
-            # Map runtime/engine
-            if desired.processing and "runtime" in desired.processing:
-                runtime_name = desired.processing["runtime"]
-                runtime_id = self.client.resolve_engine_id(runtime_name)
-                if "runtime" not in payload:
-                    payload["runtime"] = {"type": "REMOTE_ENGINE"}
-                
-                if runtime_id:
-                    payload["runtime"]["id"] = runtime_id
-                    payload["runtime"]["type"] = "REMOTE_ENGINE"
-                else:
-                    logger.warning("Could not resolve engine '%s', using as is", runtime_name)
-            
             # Always ensure workspaceId is preserved
             payload["workspaceId"] = self.client.workspace_id
             payload["environmentId"] = self.client.environment_id
             
-            # 4. Update the task
+            # 4. Update the task definition (artifact, parameters, connections)
             self.client.update_task(remote_task_id, payload)
-            logger.info("Task '%s' updated successfully", desired.name)
+            logger.info("Task '%s' definition updated successfully", desired.name)
+            
+            # 5. Update the run configuration (engine, processing fields)
+            self._apply_run_config(desired.name, remote_task_id, desired.processing)
+                    
             return DeployResult(
                 task_name=desired.name,
                 change_type=ChangeType.UPDATE_ARTIFACT,
@@ -523,21 +593,6 @@ class TalendConnector(BaseConnector):
             for studio_name, cloud_name in desired.studio_connection.items():
                 conn_id = self.client.resolve_connection_id(cloud_name)
                 payload["connections"][studio_name] = conn_id or cloud_name
-
-        # Processing / runtime configuration
-        if desired.processing:
-            if "runtime" in desired.processing:
-                runtime_name = desired.processing["runtime"]
-                runtime_id = self.client.resolve_engine_id(runtime_name)
-                payload["runtime"] = {
-                    "type": "REMOTE_ENGINE" if runtime_id else "CLOUD",
-                    "id": runtime_id or runtime_name
-                }
-            
-            # Other processing fields
-            proc_keys = {k: v for k, v in desired.processing.items() if k != "runtime"}
-            if proc_keys:
-                payload["processing"] = proc_keys
 
         return payload
 

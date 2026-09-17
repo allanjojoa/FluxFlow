@@ -200,6 +200,14 @@ class TalendClient:
         """
         return self._put(f"/orchestration/executables/tasks/{task_id}", json_body=payload)
 
+    def get_task_run_config(self, task_id: str) -> dict[str, Any]:
+        """Fetch the execution run configuration for a task."""
+        return self._get(f"/orchestration/executables/tasks/{task_id}/run-config")
+
+    def update_task_run_config(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Update the execution run configuration (engine, timeout, log level) for an existing task."""
+        return self._put(f"/orchestration/executables/tasks/{task_id}/run-config", json_body=payload)
+
     # ------------------------------------------------------------------
     # Plan endpoints
     # ------------------------------------------------------------------
@@ -304,8 +312,8 @@ class TalendClient:
             items = data if isinstance(data, list) else data.get("items", [])
             for item in items:
                 if item.get("name") == engine_name:
-                    env_name = item.get("workspace", {}).get("environment", {}).get("name")
-                    if env_name == self.environment_name:
+                    env_id = item.get("workspace", {}).get("environment", {}).get("id")
+                    if env_id == self.environment_id:
                         return item.get("id")
             return None
         except TalendAPIError:
