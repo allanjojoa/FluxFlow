@@ -22,6 +22,7 @@ def env_config() -> EnvironmentConfig:
         base_url="https://api.us.cloud.talend.com",
         token="test-token-123",
         workspace_name="ws-test-001",
+        workspace_id="ws-test-001",
     )
 
 

@@ -440,6 +440,16 @@ class TalendConnector(BaseConnector):
         try:
             # 1. Fetch the existing task to preserve connections, tags, and runtime
             remote_task = self.client.get_task(remote_task_id)
+            if remote_task.workspace_id and remote_task.workspace_id != self.client.workspace_id:
+                logger.warning(
+                    "Task '%s' (id=%s) belongs to workspace '%s', not target workspace '%s'. Re-resolving by name...",
+                    desired.name, remote_task_id, remote_task.workspace_id, self.client.workspace_id
+                )
+                target_task = self.get_task_by_name(desired.name)
+                if target_task and target_task.id != remote_task_id:
+                    remote_task_id = target_task.id
+                    remote_task = self.client.get_task(remote_task_id)
+
             payload = remote_task.raw.copy()
             
             # 2. Resolve artifact and version

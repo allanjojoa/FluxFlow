@@ -144,13 +144,13 @@ class TalendClient:
         list[RemoteTask]
             All tasks found in the workspace.
         """
-        params = {"workspaceId": self._workspace_id}
-        data = self._get("/orchestration/executables/tasks", params=params)
+        params = {"workspaceId": self.workspace_id}
+        items = self._get_paginated("/orchestration/executables/tasks", params=params)
 
-        # The API may return a dict with an "items" key or a raw list.
-        items = data if isinstance(data, list) else data.get("items", [])
-
-        return [self._parse_task(item) for item in items]
+        tasks = [self._parse_task(item) for item in items]
+        if self.workspace_id:
+            tasks = [t for t in tasks if not t.workspace_id or t.workspace_id == self.workspace_id]
+        return tasks
 
     def get_task(self, task_id: str) -> RemoteTask:
         """Fetch a single task by its ID.
@@ -214,10 +214,12 @@ class TalendClient:
 
     def list_plans(self) -> list[RemotePlan]:
         """Fetch all plans in the configured workspace."""
-        params = {"workspaceId": self._workspace_id}
-        data = self._get("/orchestration/executables/plans", params=params)
-        items = data if isinstance(data, list) else data.get("items", [])
-        return [self._parse_plan(item) for item in items]
+        params = {"workspaceId": self.workspace_id}
+        items = self._get_paginated("/orchestration/executables/plans", params=params)
+        plans = [self._parse_plan(item) for item in items]
+        if self.workspace_id:
+            plans = [p for p in plans if not p.workspace_id or p.workspace_id == self.workspace_id]
+        return plans
 
     def get_plan(self, plan_id: str) -> RemotePlan:
         """Fetch a single plan by its ID."""
@@ -244,10 +246,8 @@ class TalendClient:
         list[RemoteArtifact]
             All artifacts found in the workspace.
         """
-        params = {"workspaceId": self._workspace_id}
-        data = self._get("/orchestration/artifacts", params=params)
-
-        items = data if isinstance(data, list) else data.get("items", [])
+        params = {"workspaceId": self.workspace_id}
+        items = self._get_paginated("/orchestration/artifacts", params=params)
 
         artifacts: list[RemoteArtifact] = []
         for item in items:
@@ -296,8 +296,7 @@ class TalendClient:
         """Find the Cloud Connection ID for a given connection name."""
         try:
             params = {"workspaceId": self.workspace_id}
-            data = self._get("/orchestration/connections", params=params)
-            items = data if isinstance(data, list) else data.get("items", [])
+            items = self._get_paginated("/orchestration/connections", params=params)
             for item in items:
                 if item.get("name") == connection_name:
                     return item.get("id")
@@ -308,8 +307,7 @@ class TalendClient:
     def resolve_engine_id(self, engine_name: str) -> str | None:
         """Find the Remote Engine ID for a given engine name in the current environment."""
         try:
-            data = self._get("/processing/runtimes/remote-engines")
-            items = data if isinstance(data, list) else data.get("items", [])
+            items = self._get_paginated("/processing/runtimes/remote-engines")
             for item in items:
                 if item.get("name") == engine_name:
                     env_id = item.get("workspace", {}).get("environment", {}).get("id")
@@ -341,6 +339,27 @@ class TalendClient:
 
     def _get(self, path: str, *, params: dict | None = None) -> Any:
         return self._request("GET", path, params=params)
+
+    def _get_paginated(self, path: str, *, params: dict | None = None) -> list[Any]:
+        """Fetch all pages for a paginated endpoint."""
+        params = params or {}
+        limit = 100
+        offset = 0
+        all_items = []
+
+        while True:
+            current_params = {**params, "limit": limit, "offset": offset}
+            data = self._get(path, params=current_params)
+
+            items = data if isinstance(data, list) else data.get("items", [])
+            all_items.extend(items)
+
+            if isinstance(data, list) or len(items) < limit:
+                break
+
+            offset += limit
+
+        return all_items
 
     def _post(self, path: str, *, json_body: dict | None = None) -> Any:
         return self._request("POST", path, json_body=json_body)
